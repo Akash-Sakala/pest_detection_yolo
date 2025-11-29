@@ -2,10 +2,8 @@ from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 from ultralytics import YOLO
-import shutil
-import os
-import uuid
-import tempfile
+import numpy as np
+import cv2
 
 app = FastAPI()
 
@@ -17,46 +15,41 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-MODEL_PATH = "best.pt"
-model = YOLO(MODEL_PATH)
+# Load YOLO model once at startup
+model = YOLO("best.pt")
 
-@app.post("/detect")
+@app.post("/detect/")
 async def detect_pest(image: UploadFile = File(...)):
-    import tempfile
+    # Read uploaded image bytes
+    img_bytes = await image.read()
 
-    # Create temp file path (works on Windows / Linux / Mac)
-    temp_name = f"{uuid.uuid4()}.jpg"
-    temp_dir = tempfile.gettempdir()
-    temp_path = os.path.join(temp_dir, temp_name)
+    # Convert to numpy array
+    np_arr = np.frombuffer(img_bytes, np.uint8)
 
-    # Save file
-    with open(temp_path, "wb") as buffer:
-        shutil.copyfileobj(image.file, buffer)
+    # Decode image from bytes
+    img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
 
-    print("Saved file:", temp_path, "size:", os.path.getsize(temp_path))
+    if img is None:
+        return {"error": "Invalid image file"}
 
-    # YOLO prediction
-    results = model.predict(temp_path, imgsz=640, conf=0.05)
+    # YOLO prediction directly on decoded image
+    results = model.predict(img, imgsz=640, conf=0.05)
     boxes = results[0].boxes
 
-    # No detection
+    # No detections
     if boxes is None or len(boxes) == 0:
-        os.remove(temp_path)
         return {"pestType": None}
 
     # Get highest confidence detection
     ids = boxes.cls.cpu().numpy().astype(int)
     confs = boxes.conf.cpu().numpy()
-    best = confs.argmax()
+    best_idx = confs.argmax()
 
-    pest_id = ids[best]
-    confidence = float(confs[best])
-    name = model.names[pest_id]
-
-    os.remove(temp_path)
+    pest_name = model.names[ids[best_idx]]
+    confidence = float(confs[best_idx])
 
     return {
-        "pestType": name,
+        "pestType": pest_name,
         "confidence": confidence
     }
 
